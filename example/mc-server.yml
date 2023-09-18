@@ -1,0 +1,92 @@
+apiVersion: 'agones.dev/v1'
+kind: GameServer
+metadata:
+  generateName: 'mc-server-' # Generates a unique name for GameServer and Pod
+spec:
+  container: mc-server # Minecraft server container name
+  ports:
+    - name: mc
+      # "Dynamic" (default) the system allocates a free hostPort for the gameserver (default 7000-8000), for game clients to connect to
+      portPolicy: Dynamic
+      # The name of the container to open the port on. Defaults to the game server container if omitted or empty.
+      container: mc-server
+      # the port that is being opened on the game server process
+      containerPort: 25565
+      # Minecraft uses TCP to connect players
+      protocol: TCP
+  # Health checking for the running game server
+  health:
+    # Number of seconds after the container has started before health check is initiated.
+    initialDelaySeconds: 60
+    # If the `Health()` function doesn't get called at least once every period (seconds), then
+    # the game server is not healthy.
+    periodSeconds: 12
+    # Minimum consecutive failures for the health probe to be considered failed after having succeeded.
+    failureThreshold: 5
+  template:
+    spec:
+      containers:
+        - name: mc-server
+          image: itzg/minecraft-server # Minecraft Java server image
+          env: # Full list of ENV variables at https://github.com/itzg/docker-minecraft-server
+            - name: EULA
+              value: "TRUE"
+          volumeMounts:
+            - mountPath: /data # shared vol with mc-load and mc-backup
+              name: world-vol
+
+        - name: mc-monitor
+          image: saulmaldonado/agones-mc # monitor
+          env:
+            - name: TYPE
+              value: FABRIC
+            - name: INITIAL_DELAY
+              value: 60s
+            - name: MAX_ATTEMPTS
+              value: '5'
+            - name: INTERVAL
+              value: 10s
+            - name: TIMEOUT
+              value: 10s
+          args:
+            - monitor
+          imagePullPolicy: Always
+
+        - name: mc-backup
+          image: saulmaldonado/agones-mc # backup
+          args:
+            - backup
+          env:
+            - name: BUCKET_NAME
+              value: agones-minecraft-mc-worlds
+            - name: BACKUP_CRON
+              value: 0 */6 * * *
+            - name: INITIAL_DELAY
+              value: 60s
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name # GameServer ref for naming backup zip files
+            - name: RCON_PASSWORD
+              value: minecraft # default rcon password. If provided RCON connection will be used to execute 'save-all' before a backup job.
+              # Change the rcon password when exposing RCON port outside the pod
+          imagePullPolicy: Always
+          volumeMounts:
+            - mountPath: /data # shared vol with mc-server
+              name: world-vol
+
+        - name: mc-fileserver # fileserver
+          image: saulmaldonado/agones-mc
+          args:
+            - fileserver
+          env:
+            - name: VOLUME
+              value: /data
+          imagePullPolicy: Always
+          volumeMounts:
+            - mountPath: /data # shared vol with mc-server
+              name: world-vol
+
+      volumes:
+        - name: world-vol # shared vol between containers. will not persist bewteen restarts
+          emptyDir: {}
